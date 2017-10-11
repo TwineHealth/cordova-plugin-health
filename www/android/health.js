@@ -59,7 +59,8 @@ Health.prototype.queryAggregated = function (opts, onSuccess, onError) {
     navigator.health.queryAggregated({
       dataType:'calories.basal',
       endDate: opts.endDate,
-      startDate: opts.startDate
+      startDate: opts.startDate,
+      bucket: opts.bucket
     }, function(data){
       var basal_ms = data.value / (opts.endDate - opts.startDate);
       //now get the total
