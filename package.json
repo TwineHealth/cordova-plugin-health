@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "1.0.5",
   "name": "cordova-plugin-health",
   "cordova_name": "Health",
   "description": "A plugin that abstracts fitness and health repositories like Apple HealthKit or Google Fit",
@@ -29,7 +29,7 @@
   "engines": [
     {
       "name": "cordova",
-      "version": ">=3.0.0"
+      "version": ">=6.0.0"
     }
   ]
 }

@@ -16,6 +16,7 @@ static NSString *const HKPluginKeyEndDate = @"endDate";
 static NSString *const HKPluginKeySampleType = @"sampleType";
 static NSString *const HKPluginKeyAggregation = @"aggregation";
 static NSString *const HKPluginKeyUnit = @"unit";
+static NSString *const HKPluginKeyUnits = @"units";
 static NSString *const HKPluginKeyAmount = @"amount";
 static NSString *const HKPluginKeyValue = @"value";
 static NSString *const HKPluginKeyCorrelationType = @"correlationType";
@@ -57,7 +58,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
 + (HKSampleType *)getHKSampleType:(NSString *)elem;
 
-- (HKQuantitySample *)loadHKQuantitySampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error;
+- (HKQuantitySample *)loadHKSampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error;
 
 - (HKCorrelation *)loadHKCorrelationFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error;
 
@@ -235,37 +236,51 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 }
 
 /**
- * Parse out a quantity sample from a dictionary and perform error checking
+ * Parse out a sample from a dictionary and perform error checking
  *
  * @param inputDictionary   *NSDictionary
  * @param error             **NSError
  * @return                  *HKQuantitySample
  */
-- (HKQuantitySample *)loadHKQuantitySampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error {
+- (HKSample *)loadHKSampleFromInputDictionary:(NSDictionary *)inputDictionary error:(NSError **)error {
     //Load quantity sample from args to command
 
-    if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyStartDate, HKPluginKeyEndDate, HKPluginKeySampleType, HKPluginKeyUnit, HKPluginKeyAmount] error:error]) {
+    if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyStartDate, HKPluginKeyEndDate, HKPluginKeySampleType] error:error]) {
         return nil;
     }
 
     NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyStartDate] longValue]];
     NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[inputDictionary[HKPluginKeyEndDate] longValue]];
     NSString *sampleTypeString = inputDictionary[HKPluginKeySampleType];
-    NSString *unitString = inputDictionary[HKPluginKeyUnit];
 
     //Load optional metadata key
     NSDictionary *metadata = inputDictionary[HKPluginKeyMetadata];
     if (metadata == nil) {
-        metadata = @{};
+      metadata = @{};
     }
 
-    return [HealthKit getHKQuantitySampleWithStartDate:startDate
-                                               endDate:endDate
-                                      sampleTypeString:sampleTypeString
-                                        unitTypeString:unitString
-                                                 value:[inputDictionary[HKPluginKeyAmount] doubleValue]
-                                              metadata:metadata error:error];
-}
+    if ([inputDictionary objectForKey:HKPluginKeyUnit]) {
+        if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyUnit] error:error]) return nil;
+        NSString *unitString = [inputDictionary objectForKey:HKPluginKeyUnit];
+
+            return [HealthKit getHKQuantitySampleWithStartDate:startDate
+                                                   endDate:endDate
+                                          sampleTypeString:sampleTypeString
+                                            unitTypeString:unitString
+                                                     value:[inputDictionary[HKPluginKeyAmount] doubleValue]
+                                                  metadata:metadata error:error];
+    } else {
+            if (![inputDictionary hasAllRequiredKeys:@[HKPluginKeyValue] error:error]) return nil;
+            NSString *categoryString = [inputDictionary objectForKey:HKPluginKeyValue];
+
+            return [self getHKCategorySampleWithStartDate:startDate
+                                                       endDate:endDate
+                                              sampleTypeString:sampleTypeString
+                                                categoryString:categoryString
+                                                      metadata:metadata
+                                                         error:error];
+        }
+  }
 
 /**
  * Parse out a correlation from a dictionary and perform error checking
@@ -288,7 +303,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     NSMutableSet *objects = [NSMutableSet set];
     for (NSDictionary *objectDictionary in objectDictionaries) {
-        HKQuantitySample *sample = [self loadHKQuantitySampleFromInputDictionary:objectDictionary error:error];
+        HKSample *sample = [self loadHKSampleFromInputDictionary:objectDictionary error:error];
         if (sample == nil) {
             return nil;
         }
@@ -337,32 +352,73 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     HKUnit *unit = nil;
     @try {
-        unit = ((unitTypeString != nil) ? [HKUnit unitFromString:unitTypeString] : nil);
-        if (unit == nil) {
-            if (error != nil) {
-                *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit was invalid"}];
+        if (unitTypeString != nil) {
+            if ([unitTypeString isEqualToString:@"mmol/L"]) {
+                // @see https://stackoverflow.com/a/30196642/1214598
+                unit = [[HKUnit moleUnitWithMetricPrefix:HKMetricPrefixMilli molarMass:HKUnitMolarMassBloodGlucose] unitDividedByUnit:[HKUnit literUnit]];
+            } else {
+                // issue 51
+                // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
+                if ([unitTypeString isEqualToString:@"percent"]) {
+                    unitTypeString = @"%";
+                }
+                unit = [HKUnit unitFromString:unitTypeString];
             }
-
+        } else {
+            if (error != nil) {
+                *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is invalid"}];
+            }
             return nil;
         }
     } @catch (NSException *e) {
         if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit was invalid"}];
+            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is invalid"}];
         }
-
         return nil;
     }
 
     HKQuantity *quantity = [HKQuantity quantityWithUnit:unit doubleValue:value];
     if (![quantity isCompatibleWithUnit:unit]) {
         if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit was not compatible with quantity"}];
+            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"unit is not compatible with quantity"}];
         }
 
         return nil;
     }
 
     return [HKQuantitySample quantitySampleWithType:type quantity:quantity startDate:startDate endDate:endDate metadata:metadata];
+}
+
+// Helper to handle the functionality with HealthKit to get a category sample
+- (HKCategorySample*) getHKCategorySampleWithStartDate:(NSDate*) startDate endDate:(NSDate*) endDate sampleTypeString:(NSString*) sampleTypeString categoryString:(NSString*) categoryString metadata:(NSDictionary*) metadata error:(NSError**) error {
+    HKCategoryType *type = [HKCategoryType categoryTypeForIdentifier:sampleTypeString];
+    if (type==nil) {
+      *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:@"quantity type string is invalid"}];
+      return nil;
+    }
+    NSNumber* value = [self getCategoryValueByName:categoryString type:type];
+    if (value == nil) {
+      *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"%@,%@,%@",@"category value is not compatible with category",type.identifier,categoryString]}];
+      return nil;
+    }
+
+    return [HKCategorySample categorySampleWithType:type value:[value integerValue] startDate:startDate endDate:endDate];
+}
+
+- (NSNumber*) getCategoryValueByName:(NSString *) categoryValue type:(HKCategoryType*) type {
+    NSDictionary * map = @{
+      @"HKCategoryTypeIdentifierSleepAnalysis":@{
+        @"HKCategoryValueSleepAnalysisInBed":@(HKCategoryValueSleepAnalysisInBed),
+        @"HKCategoryValueSleepAnalysisAsleep":@(HKCategoryValueSleepAnalysisAsleep),
+        @"HKCategoryValueSleepAnalysisAwake":@(HKCategoryValueSleepAnalysisAwake)
+      }
+    };
+
+    NSDictionary * valueMap = map[type.identifier];
+    if (!valueMap) {
+      return HKCategoryValueNotApplicable;
+    }
+    return valueMap[categoryValue];
 }
 
 /**
@@ -389,7 +445,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     HKCorrelationType *correlationType = [HKCorrelationType correlationTypeForIdentifier:correlationTypeString];
     if (correlationType == nil) {
         if (error != nil) {
-            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"correlation type string was invalid"}];
+            *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: @"correlation type string is invalid"}];
         }
 
         return nil;
@@ -441,7 +497,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     }
 
     if (error != nil) {
-        NSString *errMsg = [NSString stringWithFormat:@"required value(s) -%@- was missing from dictionary %@", [missing componentsJoinedByString:@", "], [self description]];
+        NSString *errMsg = [NSString stringWithFormat:@"required value(s) -%@- is missing from dictionary %@", [missing componentsJoinedByString:@", "], [self description]];
         *error = [NSError errorWithDomain:HKPluginError code:0 userInfo:@{NSLocalizedDescriptionKey: errMsg}];
     }
 
@@ -569,7 +625,13 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     // if a user grants/denies read access, *only* write access.
     NSMutableDictionary *args = command.arguments[0];
     NSString *checkType = args[HKPluginKeyType];
-    HKObjectType *type = [HealthKit getHKObjectType:checkType];
+    HKObjectType *type;
+
+    if ([checkType isEqual:@"HKWorkoutTypeIdentifier"]) {
+        type = [HKObjectType workoutType];
+    } else {
+        type = [HealthKit getHKObjectType:checkType];
+    }
 
     __block HealthKit *bSelf = self;
     [self checkAuthStatusWithCallbackId:command.callbackId forType:type andCompletion:^(CDVPluginResult *result, NSString *callbackId) {
@@ -599,7 +661,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     if (energy != nil && energy != (id) [NSNull null]) { // better safe than sorry
         HKUnit *preferredEnergyUnit = [HealthKit getUnit:energyUnit expected:@"HKEnergyUnit"];
         if (preferredEnergyUnit == nil) {
-            [HealthKit triggerErrorCallbackWithMessage:@"invalid energyUnit was passed" command:command delegate:self.commandDelegate];
+            [HealthKit triggerErrorCallbackWithMessage:@"invalid energyUnit is passed" command:command delegate:self.commandDelegate];
             return;
         }
         nrOfEnergyUnits = [HKQuantity quantityWithUnit:preferredEnergyUnit doubleValue:energy.doubleValue];
@@ -612,7 +674,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     if (distance != nil && distance != (id) [NSNull null]) { // better safe than sorry
         HKUnit *preferredDistanceUnit = [HealthKit getUnit:distanceUnit expected:@"HKLengthUnit"];
         if (preferredDistanceUnit == nil) {
-            [HealthKit triggerErrorCallbackWithMessage:@"invalid distanceUnit was passed" command:command delegate:self.commandDelegate];
+            [HealthKit triggerErrorCallbackWithMessage:@"invalid distanceUnit is passed" command:command delegate:self.commandDelegate];
             return;
         }
         nrOfDistanceUnits = [HKQuantity quantityWithUnit:preferredDistanceUnit doubleValue:distance.doubleValue];
@@ -629,7 +691,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     } else if (args[HKPluginKeyEndDate] != nil) {
         endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] doubleValue]];
     } else {
-        [HealthKit triggerErrorCallbackWithMessage:@"no duration or endDate was set" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"no duration or endDate is set" command:command delegate:self.commandDelegate];
         return;
     }
 
@@ -656,9 +718,9 @@ static NSString *const HKPluginKeyUUID = @"UUID";
             [[HealthKit sharedHealthStore] saveObject:workout withCompletion:^(BOOL success_save, NSError *innerError) {
                 if (success_save) {
                     // now store the samples, so it shows up in the health app as well (pass this in as an option?)
-                    if (energy != nil) {
+                    if (energy != nil || distance != nil) {
                         HKQuantitySample *sampleActivity = [HKQuantitySample quantitySampleWithType:[HKQuantityType quantityTypeForIdentifier:
-                                        quantityType]
+                                        HKQuantityTypeIdentifierDistanceWalkingRunning]
                                                                                            quantity:nrOfDistanceUnits
                                                                                           startDate:startDate
                                                                                             endDate:endDate];
@@ -681,6 +743,12 @@ static NSString *const HKPluginKeyUUID = @"UUID";
                                 });
                             }
                         }];
+                    } else {
+                      // no samples, all OK then!
+                      dispatch_sync(dispatch_get_main_queue(), ^{
+                          CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
+                          [bSelf.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+                      });
                     }
                 } else {
                     dispatch_sync(dispatch_get_main_queue(), ^{
@@ -740,8 +808,8 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
                         NSEnergyFormatter *energyFormatter = [NSEnergyFormatter new];
                         energyFormatter.forFoodEnergyUse = NO;
-                        double joules = [workout.totalEnergyBurned doubleValueForUnit:[HKUnit kilocalorieUnit]];
-                        NSString *calories = [energyFormatter stringFromJoules:joules];
+                        double cals = [workout.totalEnergyBurned doubleValueForUnit:[HKUnit kilocalorieUnit]];
+                        NSString *calories = [energyFormatter stringFromValue:cals unit:[HKUnit kilocalorieUnit]];
 
                         NSMutableDictionary *entry = [
                                 @{
@@ -791,7 +859,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKMassUnit"];
     if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit was passed" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
         return;
     }
 
@@ -834,7 +902,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKMassUnit"];
     if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit was passed" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
         return;
     }
 
@@ -890,13 +958,13 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     BOOL requestReadPermission = (args[@"requestReadPermission"] == nil || [args[@"requestReadPermission"] boolValue]);
 
     if (amount == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"no amount was set" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"no amount is set" command:command delegate:self.commandDelegate];
         return;
     }
 
     HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKLengthUnit"];
     if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit was passed" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
         return;
     }
 
@@ -939,7 +1007,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     HKUnit *preferredUnit = [HealthKit getUnit:unit expected:@"HKLengthUnit"];
     if (preferredUnit == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit was passed" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"invalid unit is passed" command:command delegate:self.commandDelegate];
         return;
     }
 
@@ -1259,7 +1327,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
     NSString *sampleTypeString = args[HKPluginKeySampleType];
     NSString *unitString = args[HKPluginKeyUnit];
-    NSUInteger limit = ((args[@"limit"] != nil) ? [args[@"limit"] unsignedIntegerValue] : 100);
+    NSUInteger limit = ((args[@"limit"] != nil) ? [args[@"limit"] unsignedIntegerValue] : 1000);
     BOOL ascending = (args[@"ascending"] != nil && [args[@"ascending"] boolValue]);
 
     HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
@@ -1269,12 +1337,17 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     }
     HKUnit *unit = nil;
     if (unitString != nil) {
-        // issue 51
-        // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
-        if ([unitString isEqualToString:@"percent"]) {
-            unitString = @"%";
+        if ([unitString isEqualToString:@"mmol/L"]) {
+            // @see https://stackoverflow.com/a/30196642/1214598
+            unit = [[HKUnit moleUnitWithMetricPrefix:HKMetricPrefixMilli molarMass:HKUnitMolarMassBloodGlucose] unitDividedByUnit:[HKUnit literUnit]];
+        } else {
+            // issue 51
+            // @see https://github.com/Telerik-Verified-Plugins/HealthKit/issues/51
+            if ([unitString isEqualToString:@"percent"]) {
+                unitString = @"%";
+            }
+            unit = [HKUnit unitFromString:unitString];
         }
-        unit = [HKUnit unitFromString:unitString];
     }
     // TODO check that unit is compatible with sampleType if sample type of HKQuantityType
     NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
@@ -1404,7 +1477,7 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     HKStatisticsOptions statOpt = HKStatisticsOptionNone;
 
     if (quantityType == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
         return;
     } else if ([sampleTypeString isEqualToString:@"HKQuantityTypeIdentifierHeartRate"]) {
         statOpt = HKStatisticsOptionDiscreteAverage;
@@ -1425,12 +1498,17 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
     HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
     if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
         return;
     }
 
     // NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
     NSPredicate *predicate = nil;
+    
+    BOOL filtered = (args[@"filtered"] != nil && [args[@"filtered"] boolValue]);
+    if (filtered) {
+        predicate = [NSPredicate predicateWithFormat:@"metadata.%K != YES", HKMetadataKeyWasUserEntered];
+    }
 
     NSSet *requestTypes = [NSSet setWithObjects:type, nil];
     [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:requestTypes completion:^(BOOL success, NSError *error) {
@@ -1522,14 +1600,19 @@ static NSString *const HKPluginKeyUUID = @"UUID";
     NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
     NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
     NSString *correlationTypeString = args[HKPluginKeyCorrelationType];
-    NSString *unitString = args[HKPluginKeyUnit];
+    NSArray<NSString *> *unitsString = args[HKPluginKeyUnits];
 
     HKCorrelationType *type = (HKCorrelationType *) [HealthKit getHKSampleType:correlationTypeString];
     if (type == nil) {
-        [HealthKit triggerErrorCallbackWithMessage:@"sampleType was invalid" command:command delegate:self.commandDelegate];
+        [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
         return;
     }
-    HKUnit *unit = ((unitString != nil) ? [HKUnit unitFromString:unitString] : nil);
+    NSMutableArray *units = [[NSMutableArray alloc] init];
+    for (NSString *unitString in unitsString) {
+        HKUnit *unit = ((unitString != nil) ? [HKUnit unitFromString:unitString] : nil);
+        [units addObject:unit];
+    }
+
     // TODO check that unit is compatible with sampleType if sample type of HKQuantityType
     NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
 
@@ -1551,6 +1634,8 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
                 // common indices
                 entry[HKPluginKeyUUID] = sample.UUID.UUIDString;
+                entry[HKPluginKeySourceName] = sample.source.name;
+                entry[HKPluginKeySourceBundleId] = sample.source.bundleIdentifier;
                 if (sample.metadata == nil || ![NSJSONSerialization isValidJSONObject:sample.metadata]) {
                     entry[HKPluginKeyMetadata] = @{};
                 } else {
@@ -1572,18 +1657,22 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 
                     NSMutableArray *samples = [NSMutableArray arrayWithCapacity:correlation.objects.count];
                     for (HKQuantitySample *quantitySample in correlation.objects) {
-                        // if an incompatible unit was passed, the sample is not included
-                        if ([quantitySample.quantity isCompatibleWithUnit:unit]) {
-                            [samples addObject:@{
-                                    HKPluginKeyStartDate: [HealthKit stringFromDate:quantitySample.startDate],
-                                    HKPluginKeyEndDate: [HealthKit stringFromDate:quantitySample.endDate],
-                                    HKPluginKeySampleType: quantitySample.sampleType.identifier,
-                                    HKPluginKeyValue: @([quantitySample.quantity doubleValueForUnit:unit]),
-                                    HKPluginKeyUnit: unit.unitString,
-                                    HKPluginKeyMetadata: ((quantitySample.metadata != nil) ? quantitySample.metadata : @{}),
-                                    HKPluginKeyUUID: quantitySample.UUID.UUIDString
+                        for (int i=0; i<[units count]; i++) {
+                            HKUnit *unit = units[i];
+                            NSString *unitS = unitsString[i];
+                            if ([quantitySample.quantity isCompatibleWithUnit:unit]) {
+                                [samples addObject:@{
+                                                     HKPluginKeyStartDate: [HealthKit stringFromDate:quantitySample.startDate],
+                                                     HKPluginKeyEndDate: [HealthKit stringFromDate:quantitySample.endDate],
+                                                     HKPluginKeySampleType: quantitySample.sampleType.identifier,
+                                                     HKPluginKeyValue: @([quantitySample.quantity doubleValueForUnit:unit]),
+                                                     HKPluginKeyUnit: unitS,
+                                                     HKPluginKeyMetadata: (quantitySample.metadata == nil || ![NSJSONSerialization isValidJSONObject:quantitySample.metadata]) ? @{} : quantitySample.metadata,
+                                                     HKPluginKeyUUID: quantitySample.UUID.UUIDString
+                                                     }
+                                 ];
+                                break;
                             }
-                            ];
                         }
                     }
                     entry[HKPluginKeyObjects] = samples;
@@ -1591,7 +1680,14 @@ static NSString *const HKPluginKeyUUID = @"UUID";
                 } else if ([sample isKindOfClass:[HKQuantitySample class]]) {
 
                     HKQuantitySample *qsample = (HKQuantitySample *) sample;
-                    entry[@"quantity"] = @([qsample.quantity doubleValueForUnit:unit]);
+                    for (int i=0; i<[units count]; i++) {
+                        HKUnit *unit = units[i];
+                        if ([qsample.quantity isCompatibleWithUnit:unit]) {
+                            double quantity = [qsample.quantity doubleValueForUnit:unit];
+                            entry[@"quantity"] = [NSString stringWithFormat:@"%f", quantity];
+                            break;
+                        }
+                    }
 
                 } else if ([sample isKindOfClass:[HKWorkout class]]) {
 
@@ -1616,16 +1712,16 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 }
 
 /**
- * Save quantity sample data
+ * Save sample data
  *
  * @param command *CDVInvokedUrlCommand
  */
-- (void)saveQuantitySample:(CDVInvokedUrlCommand *)command {
+- (void)saveSample:(CDVInvokedUrlCommand *)command {
     NSDictionary *args = command.arguments[0];
 
     //Use helper method to create quantity sample
     NSError *error = nil;
-    HKQuantitySample *sample = [self loadHKQuantitySampleFromInputDictionary:args error:&error];
+    HKSample *sample = [self loadHKSampleFromInputDictionary:args error:&error];
 
     //If error in creation, return plugin result
     if (error) {
@@ -1685,18 +1781,43 @@ static NSString *const HKPluginKeyUUID = @"UUID";
 }
 
 /**
- * Delete a specified object from teh HealthKit store
- * @TODO implement me
+ * Delete matching samples from the HealthKit store.
+ * See https://developer.apple.com/library/ios/documentation/HealthKit/Reference/HKHealthStore_Class/#//apple_ref/occ/instm/HKHealthStore/deleteObject:withCompletion:
  *
  * @param command *CDVInvokedUrlCommand
  */
-- (void)deleteObject:(CDVInvokedUrlCommand *)command {
-    //NSDictionary *args = command.arguments[0];
+- (void)deleteSamples:(CDVInvokedUrlCommand *)command {
+  NSDictionary *args = command.arguments[0];
+  NSDate *startDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyStartDate] longValue]];
+  NSDate *endDate = [NSDate dateWithTimeIntervalSince1970:[args[HKPluginKeyEndDate] longValue]];
+  NSString *sampleTypeString = args[HKPluginKeySampleType];
 
-    // TODO see the 3 methods at https://developer.apple.com/library/ios/documentation/HealthKit/Reference/HKHealthStore_Class/#//apple_ref/occ/instm/HKHealthStore/deleteObject:withCompletion:
+  HKSampleType *type = [HealthKit getHKSampleType:sampleTypeString];
+  if (type == nil) {
+    [HealthKit triggerErrorCallbackWithMessage:@"sampleType is invalid" command:command delegate:self.commandDelegate];
+    return;
+  }
 
-    CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-    [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+  NSPredicate *predicate = [HKQuery predicateForSamplesWithStartDate:startDate endDate:endDate options:HKQueryOptionStrictStartDate];
+
+  NSSet *requestTypes = [NSSet setWithObjects:type, nil];
+  [[HealthKit sharedHealthStore] requestAuthorizationToShareTypes:nil readTypes:requestTypes completion:^(BOOL success, NSError *error) {
+    __block HealthKit *bSelf = self;
+    if (success) {
+      [[HealthKit sharedHealthStore] deleteObjectsOfType:type predicate:predicate withCompletion:^(BOOL success, NSUInteger deletedObjectCount, NSError * _Nullable deletionError) {
+        if (deletionError != nil) {
+          dispatch_sync(dispatch_get_main_queue(), ^{
+            [HealthKit triggerErrorCallbackWithMessage:deletionError.localizedDescription command:command delegate:bSelf.commandDelegate];
+          });
+        } else {
+          dispatch_sync(dispatch_get_main_queue(), ^{
+            CDVPluginResult *result = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsInt:(int)deletedObjectCount];
+            [self.commandDelegate sendPluginResult:result callbackId:command.callbackId];
+          });
+        }
+      }];
+    }
+  }];
 }
 
 @end

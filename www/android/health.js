@@ -8,10 +8,21 @@ Health.prototype.isAvailable = function (onSuccess, onError) {
   exec(onSuccess, onError, "health", "isAvailable", []);
 };
 
+Health.prototype.disconnect = function (onSuccess, onError) {
+  exec(onSuccess, onError, "health", "disconnect", []);
+};
+
+Health.prototype.promptInstallFit = function (onSuccess, onError) {
+  exec(onSuccess, onError, "health", "promptInstallFit", []);
+};
+
 Health.prototype.requestAuthorization = function (datatypes, onSuccess, onError) {
   exec(onSuccess, onError, "health", "requestAuthorization", datatypes);
 };
 
+Health.prototype.isAuthorized = function (datatypes, onSuccess, onError) {
+  exec(onSuccess, onError, "health", "isAuthorized", datatypes);
+};
 
 Health.prototype.query = function (opts, onSuccess, onError) {
   //calories.active is done by asking all calories and subtracting the basal
@@ -20,7 +31,8 @@ Health.prototype.query = function (opts, onSuccess, onError) {
     navigator.health.queryAggregated({
       dataType:'calories.basal',
       endDate: opts.endDate,
-      startDate: opts.startDate
+      startDate: opts.startDate,
+      bucket: opts.bucket
     }, function(data){
       var basal_ms = data.value / (opts.endDate - opts.startDate);
       //now get the total
@@ -48,7 +60,25 @@ Health.prototype.query = function (opts, onSuccess, onError) {
         data[i].startDate = new Date(data[i].startDate);
         data[i].endDate = new Date(data[i].endDate);
       }
-      onSuccess(data);
+      // if nutrition, add water
+      if(opts.dataType == 'nutrition'){
+        opts.dataType ='nutrition.water';
+        navigator.health.query(opts, function(water){
+            // merge and sort
+            for(var i=0; i<water.length; i++) {
+                water[i].value = { item: "water", nutrients: { "nutrition.water": water[i].value } };
+                water[i].unit = "nutrition";
+            }
+            data.concat(water);
+            data = data.concat(water);
+            data.sort(function(a,b){
+                return a.startDate - b.startDate;
+            })
+            onSuccess(data);
+        }, onError)
+      } else {
+        onSuccess(data);
+      }
     }, onError, "health", "query", [opts]);
   }
 };
@@ -87,8 +117,18 @@ Health.prototype.queryAggregated = function (opts, onSuccess, onError) {
         data.startDate = new Date(data.startDate);
         data.endDate = new Date(data.endDate);
       }
-      onSuccess(data);
-    }, onError, "health", "queryAggregated", [opts]);
+
+      // if nutrition, add water
+      if(opts.dataType == 'nutrition'){
+        opts.dataType ='nutrition.water';
+        navigator.health.queryAggregated(opts, function(water){
+            data.value['nutrition.water'] = water.value;
+            onSuccess(data);
+        }, onError)
+      } else {
+          onSuccess(data);
+      }
+    }, onError, 'health', 'queryAggregated', [opts]);
   }
 };
 
@@ -111,12 +151,32 @@ Health.prototype.store = function (data, onSuccess, onError) {
   exec(onSuccess, onError, "health", "store", [data]);
 };
 
+Health.prototype.delete = function (data, onSuccess, onError) {
+  if(data.dataType =='calories.basal'){
+    onError('basal calories cannot be deleted in Android');
+    return;
+  }
+  if(data.dataType =='calories.active'){
+    //rename active calories to total calories
+    data.dataType ='calories';
+  }
+  if(data.startDate && (typeof data.startDate == 'object'))
+  data.startDate = data.startDate.getTime();
+  if(data.endDate && (typeof data.endDate == 'object'))
+  data.endDate = data.endDate.getTime();
+  if(data.dataType =='activity'){
+    data.value = navigator.health.toFitActivity(data.value);
+  }
+  exec(onSuccess, onError, "health", "delete", [data]);
+};
+
 Health.prototype.toFitActivity = function (act) {
   if (act === 'core_training') return 'strength_training';
   if (act === 'flexibility') return 'gymnastics';
   if (act === 'stairs') return 'stair_climbing';
   if (act === 'wheelchair.walkpace') return 'wheelchair';
   if (act === 'wheelchair.runpace') return 'wheelchair';
+  if (act === 'sleep.inBed') return 'sleep.awake';
   // unsupported activities are mapped to 'other'
   if ((act === 'archery') ||
   (act === 'barre') ||

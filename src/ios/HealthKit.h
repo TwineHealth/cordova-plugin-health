@@ -3,7 +3,6 @@
 
 @interface HealthKit :CDVPlugin
 
-
 /**
  * Tell delegate whether or not health data is available
  *
@@ -124,11 +123,11 @@
 - (void) querySampleTypeAggregated:(CDVInvokedUrlCommand*)command;
 
 /**
- * Save quantity sample data
+ * Save sample data
  *
  * @param command *CDVInvokedUrlCommand
  */
-- (void) saveQuantitySample:(CDVInvokedUrlCommand*)command;
+- (void) saveSample:(CDVInvokedUrlCommand*)command;
 
 /**
  * Save correlation data
@@ -145,11 +144,10 @@
 - (void) queryCorrelationType:(CDVInvokedUrlCommand*)command;
 
 /**
- * Delete a specified object from teh HealthKit store
- * @TODO implement me
+ * Delete matching samples from the HealthKit store
  *
  * @param command *CDVInvokedUrlCommand
  */
-- (void) deleteObject:(CDVInvokedUrlCommand*)command;
+- (void) deleteSamples:(CDVInvokedUrlCommand*)command;
 
 @end

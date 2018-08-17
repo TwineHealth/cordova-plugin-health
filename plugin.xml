@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
   id="cordova-plugin-health"
-  version="0.7.0">
+  version="1.0.5">
 
   <name>Cordova Health</name>
 
@@ -20,7 +20,7 @@
   <issue>https://github.com/dariosalvi78/cordova-plugin-health/issues</issue>
 
   <engines>
-    <engine name="cordova" version=">=3.0.0"/>
+    <engine name="cordova" version=">=6.0.0"/>
   </engines>
 
 
@@ -40,26 +40,30 @@
       </feature>
     </config-file>
 
-    <config-file target="*-Info.plist" parent="UIRequiredDeviceCapabilities">
+    <!-- Commented this because it means you can't download/use the app on iOS devices that don't support Apple Health (e.g. iPad) -->
+    <!-- See https://github.com/dariosalvi78/cordova-plugin-health/issues/59 -->
+    <!-- <config-file target="*-Info.plist" parent="UIRequiredDeviceCapabilities">
       <array>
         <string>healthkit</string>
       </array>
-    </config-file>
-
-	<!-- Usage description of Health, mandatory since iOS 10 -->
-    <config-file target="*-Info.plist" parent="NSHealthShareUsageDescription">
-      <string/>
-    </config-file>
-    <config-file target="*-Info.plist" parent="NSHealthUpdateUsageDescription">
-      <string/>
-    </config-file>
+    </config-file> -->
 
     <!-- Usage description of Health, mandatory since iOS 10 -->
+    <preference name="HEALTH_READ_PERMISSION" default=" " />
+    <preference name="HEALTH_WRITE_PERMISSION" default=" " />
     <config-file target="*-Info.plist" parent="NSHealthShareUsageDescription">
-      <string/>
+      <string>$HEALTH_READ_PERMISSION</string>
     </config-file>
     <config-file target="*-Info.plist" parent="NSHealthUpdateUsageDescription">
-      <string/>
+      <string>$HEALTH_WRITE_PERMISSION</string>
+    </config-file>
+
+    <config-file target="*/Entitlements-Debug.plist" parent="com.apple.developer.healthkit">
+      <true/>
+    </config-file>
+
+    <config-file target="*/Entitlements-Release.plist" parent="com.apple.developer.healthkit">
+      <true/>
     </config-file>
 
     <header-file src="src/ios/WorkoutActivityConversion.h"/>
@@ -74,7 +78,7 @@
 
   <!-- android -->
   <platform name="android">
-    <framework src="com.google.android.gms:play-services-fitness:9.4.0" />
+    <framework src="com.google.android.gms:play-services-fitness:+" />
 
     <config-file target="AndroidManifest.xml" parent="/*">
       <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
