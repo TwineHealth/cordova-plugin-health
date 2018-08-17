@@ -80,10 +80,6 @@ public class HealthPlugin extends CordovaPlugin {
     private static final int REQUEST_DYN_PERMS = 2;
     private static final int READ_PERMS = 1;
     private static final int READ_WRITE_PERMS = 2;
-    private static final int REQUEST_OATH_HEALTH = 55;
-
-    private LinkedList<DataType> healthDatatypesToAuthRead = new LinkedList<DataType>();
-    private LinkedList<DataType> healthDatatypesToAuthWrite = new LinkedList<DataType>();
 
     // Scope for read/write access to activity-related data types in Google Fit.
     // These include activity type, calories consumed and expended, step counts, and others.
@@ -280,25 +276,6 @@ public class HealthPlugin extends CordovaPlugin {
                     Log.d(TAG, "Re-trying connection with Fit");
                     mClient.connect();
                     // the connection success / failure will be taken care of by ConnectionCallbacks in checkAuthorization()
-                }
-            } else if (resultCode == Activity.RESULT_CANCELED) {
-                // The user cancelled the login dialog before selecting any action.
-                authReqCallbackCtx.error("User cancelled the dialog");
-            } else authReqCallbackCtx.error("Authorisation failed, result code " + resultCode);
-        } else if (requestCode == REQUEST_OATH_HEALTH) {
-            if (resultCode == Activity.RESULT_OK) {
-                if (!healthDatatypesToAuthRead.isEmpty()) {
-                    // do the read health data first
-                    queryHealthDataForAuth();
-                } else {
-                    // if we are finished with the read health data types, do the write ones
-                    if (!healthDatatypesToAuthWrite.isEmpty()) {
-                        // do the write health data
-                        storeHealthDataForAuth();
-                    } else {
-                        // done
-                        authReqSuccess();
-                    }
                 }
             } else if (resultCode == Activity.RESULT_CANCELED) {
                 // The user cancelled the login dialog before selecting any action.
@@ -503,6 +480,8 @@ public class HealthPlugin extends CordovaPlugin {
         int activityscope = 0;
         int locationscope = 0;
         int nutritionscope = 0;
+        int bloodgucosescope = 0;
+        int bloodpressurescope = 0;
 
         HashSet<String> readWriteTypes = new HashSet<String>();
         HashSet<String> readTypes = new HashSet<String>();
@@ -539,8 +518,10 @@ public class HealthPlugin extends CordovaPlugin {
                 locationscope = READ_PERMS;
             if (nutritiondatatypes.get(readType) != null)
                 nutritionscope = READ_PERMS;
-            if (healthdatatypes.get(readType) != null)
-                healthDatatypesToAuthRead.add(healthdatatypes.get(readType));
+            if(healthdatatypes.get(readType) == HealthDataTypes.TYPE_BLOOD_GLUCOSE)
+                bloodgucosescope = READ_PERMS;
+            if(healthdatatypes.get(readType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
+                bloodpressurescope = READ_PERMS;
         }
 
         for (String readWriteType : readWriteTypes) {
@@ -552,9 +533,10 @@ public class HealthPlugin extends CordovaPlugin {
                 locationscope = READ_WRITE_PERMS;
             if (nutritiondatatypes.get(readWriteType) != null)
                 nutritionscope = READ_WRITE_PERMS;
-            if (healthdatatypes.get(readWriteType) != null) {
-                healthDatatypesToAuthWrite.add(healthdatatypes.get(readWriteType));
-            }
+            if(healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_GLUCOSE)
+                bloodgucosescope = READ_WRITE_PERMS;
+            if(healthdatatypes.get(readWriteType) == HealthDataTypes.TYPE_BLOOD_PRESSURE)
+                bloodpressurescope = READ_WRITE_PERMS;
         }
 
         dynPerms.clear();
@@ -588,6 +570,16 @@ public class HealthPlugin extends CordovaPlugin {
         } else if (nutritionscope == READ_WRITE_PERMS) {
             builder.addScope(new Scope(Scopes.FITNESS_NUTRITION_READ_WRITE));
         }
+        if (bloodgucosescope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ));
+        } else if (bloodgucosescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_GLUCOSE_READ_WRITE));
+        }
+        if (bloodpressurescope == READ_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ));
+        } else if (bloodpressurescope == READ_WRITE_PERMS) {
+            builder.addScope(new Scope(Scopes.FITNESS_BLOOD_PRESSURE_READ_WRITE));
+        }
 
         builder.addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
 
@@ -595,13 +587,7 @@ public class HealthPlugin extends CordovaPlugin {
             public void onConnected(Bundle bundle) {
                 mClient.unregisterConnectionCallbacks(this);
                 Log.i(TAG, "Google Fit connected");
-                if (!healthDatatypesToAuthRead.isEmpty()) {
-                    // need to query for all health data types
-                    queryHealthDataForAuth();
-                } else if (!healthDatatypesToAuthWrite.isEmpty()) {
-                    // need to authorise write health data types
-                    storeHealthDataForAuth();
-                } else authReqSuccess();
+                authReqSuccess();
             }
 
             @Override
@@ -670,104 +656,6 @@ public class HealthPlugin extends CordovaPlugin {
         } else {
             return false;
         }
-    }
-
-    // starts a small query for granting access to the health data types
-    private void queryHealthDataForAuth() {
-        final DataType dt = healthDatatypesToAuthRead.pop();
-        final long ts = new Date().getTime();
-
-        cordova.getThreadPool().execute(new Runnable() {
-            @Override
-            public void run() {
-                DataReadRequest readRequest = new DataReadRequest.Builder()
-                        .setTimeRange(ts - 60000, ts, TimeUnit.MILLISECONDS)
-                        .read(dt)
-                        .build();
-                DataReadResult dataReadResult = Fitness.HistoryApi.readData(mClient, readRequest).await();
-
-                if (dataReadResult.getStatus().isSuccess()) {
-                    // already authorised, go on
-                    onActivityResult(REQUEST_OATH_HEALTH, Activity.RESULT_OK, null);
-                } else {
-                    if (authAutoresolve) {
-                        if (dataReadResult.getStatus().hasResolution()) {
-                            try {
-                                dataReadResult.getStatus().startResolutionForResult(cordova.getActivity(), REQUEST_OATH_HEALTH);
-                            } catch (IntentSender.SendIntentException e) {
-                                authReqCallbackCtx.error("Cannot authorise health data type " + dt.getName() + ", cannot send intent: " + e.getMessage());
-                                return;
-                            }
-                        } else {
-                            authReqCallbackCtx.error("Cannot authorise health data type " + dt.getName() + ", " + dataReadResult.getStatus().getStatusMessage());
-                            return;
-                        }
-                    } else {
-                        // probably not authorized, send false
-                        Log.d(TAG, "Connection to Fit failed, probably because of authorization, giving up now");
-                        authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, false));
-                        return;
-                    }
-                }
-            }
-        });
-    }
-
-    // store a bogus sample for granting access to the health data types
-    private void storeHealthDataForAuth() {
-        final DataType dt = healthDatatypesToAuthWrite.pop();
-        Calendar c = Calendar.getInstance();
-        c.add(Calendar.YEAR, -10); // ten years ago
-        final long ts = c.getTimeInMillis();
-
-        cordova.getThreadPool().execute(new Runnable() {
-            @Override
-            public void run() {
-                DataSource datasrc = new DataSource.Builder()
-                        .setDataType(dt)
-                        .setAppPackageName(cordova.getActivity())
-                        .setType(DataSource.TYPE_RAW)
-                        .build();
-
-                DataSet dataSet = DataSet.create(datasrc);
-                DataPoint datapoint = DataPoint.create(datasrc);
-                datapoint.setTimeInterval(ts, ts, TimeUnit.MILLISECONDS);
-                if (dt == HealthDataTypes.TYPE_BLOOD_GLUCOSE) {
-                    datapoint.getValue(HealthFields.FIELD_BLOOD_GLUCOSE_LEVEL).setFloat(1);
-                } else if (dt == HealthDataTypes.TYPE_BLOOD_PRESSURE) {
-                    datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_DIASTOLIC).setFloat(70);
-                    datapoint.getValue(HealthFields.FIELD_BLOOD_PRESSURE_SYSTOLIC).setFloat(100);
-                }
-                dataSet.add(datapoint);
-
-                Status insertStatus = Fitness.HistoryApi.insertData(mClient, dataSet)
-                        .await(1, TimeUnit.MINUTES);
-
-                if (insertStatus.isSuccess()) {
-                    // already authorised, go on
-                    onActivityResult(REQUEST_OATH_HEALTH, Activity.RESULT_OK, null);
-                } else {
-                    if (authAutoresolve) {
-                        if (insertStatus.hasResolution()) {
-                            try {
-                                insertStatus.startResolutionForResult(cordova.getActivity(), REQUEST_OATH_HEALTH);
-                            } catch (IntentSender.SendIntentException e) {
-                                authReqCallbackCtx.error("Cannot authorise health data type " + dt.getName() + ", cannot send intent: " + e.getMessage());
-                                return;
-                            }
-                        } else {
-                            authReqCallbackCtx.error("Cannot authorise health data type " + dt.getName() + ", " + insertStatus.getStatusMessage());
-                            return;
-                        }
-                    } else {
-                        // probably not authorized, send false
-                        Log.d(TAG, "Connection to Fit failed, probably because of authorization, giving up now");
-                        authReqCallbackCtx.sendPluginResult(new PluginResult(PluginResult.Status.OK, false));
-                        return;
-                    }
-                }
-            }
-        });
     }
 
 
